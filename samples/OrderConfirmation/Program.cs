@@ -14,8 +14,19 @@ var input = Console.ReadLine() switch
 
 var transition = engine.Process(state, input);
 Console.WriteLine($"Order {transition.State.OrderId}: {transition.State.Status}");
-foreach (var action in transition.Actions)
-{
-    Console.WriteLine($"Requested action: {action.Name}");
-}
 
+// The host chooses handlers explicitly; the engine itself never calls them.
+var executor = new WorkflowActionExecutor<OrderState>(
+[
+    new ConsoleOrderActionHandler("order.confirmed"),
+    new ConsoleOrderActionHandler("order.cancelled"),
+    new ConsoleOrderActionHandler("human.review-requested")
+]);
+
+var report = await executor.ExecuteAsync(transition);
+if (!report.Succeeded)
+{
+    Console.Error.WriteLine(
+        $"Action {report.Failure!.ActionIndex} failed: {report.Failure.Kind}");
+    Environment.ExitCode = 1;
+}
