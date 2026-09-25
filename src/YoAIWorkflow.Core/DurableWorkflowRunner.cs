@@ -56,18 +56,41 @@ public sealed class DurableWorkflowRunner<TState, TInput>
     public async Task<WorkflowSession<TState>> ProcessAsync(
         string workflowId, string inputId, TInput input, CancellationToken cancellationToken = default)
     {
+        var result = await ProcessValidatedAsync(workflowId, inputId, input,
+            (_, _) => WorkflowInputValidation.Allow(), cancellationToken).ConfigureAwait(false);
+        return result.Session!;
+    }
+
+    /// <summary>
+    /// Validates against the state loaded for this decision. On a revision conflict, reloads
+    /// and validates again before saving. Rejected inputs are never persisted or dispatched.
+    /// </summary>
+    public async Task<ValidatedWorkflowDecision<TState>> ProcessValidatedAsync(
+        string workflowId, string inputId, TInput input,
+        Func<TState, TInput, WorkflowInputValidation> validate,
+        CancellationToken cancellationToken = default)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(workflowId);
         ArgumentException.ThrowIfNullOrWhiteSpace(inputId);
         ArgumentNullException.ThrowIfNull(input);
+        ArgumentNullException.ThrowIfNull(validate);
 
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var current = await _store.LoadAsync(workflowId, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("Start the workflow before processing input.");
-            if (current.ProcessedInputIds.Contains(inputId, StringComparer.Ordinal)) return current;
+            if (current.ProcessedInputIds.Contains(inputId, StringComparer.Ordinal))
+                return new ValidatedWorkflowDecision<TState>(current, null);
             if (current.HasPendingActions)
                 throw new InvalidOperationException("Dispatch pending actions before processing another input.");
+
+            var validation = validate(current.State, input)
+                ?? throw new InvalidOperationException("Input validation must return a result.");
+            if (!validation.IsValid)
+                return new ValidatedWorkflowDecision<TState>(null,
+                    string.IsNullOrWhiteSpace(validation.Reason)
+                        ? "Rejected by input validation." : validation.Reason);
 
             var transition = _engine.Process(current.State, input);
             ArgumentNullException.ThrowIfNull(transition.Actions);
@@ -85,7 +108,7 @@ public sealed class DurableWorkflowRunner<TState, TInput>
                 Actions = actions
             };
             if (await _store.TrySaveAsync(next, current.Revision, cancellationToken).ConfigureAwait(false))
-                return next;
+                return new ValidatedWorkflowDecision<TState>(next, null);
         }
     }
 

@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/YoAIWorkflow.AI/YoAIWorkflow.AI.csproj" />
+    <ProjectReference Include="../OrderConfirmation/OrderConfirmation.csproj" />
+  </ItemGroup>
+</Project>

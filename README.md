@@ -4,7 +4,7 @@
 
 YoAIWorkflow helps applications turn an input and a current state into a new state and a set of requested business actions. Workflow rules live in typed C# code; the application decides how to collect input, save state, and execute actions.
 
-> **Project status:** Early development. Phase 4 adds a file-backed, single-host persistence example and resumable action dispatch. AI integration and a production database adapter are still planned. Public APIs may change before the first package release.
+> **Project status:** Early development. Phase 5 adds a provider-independent adapter for typed AI input proposals and business validation. A real model provider, production database adapter, and package release are still planned. Public APIs may change before the first package release.
 
 ## Why it exists
 
@@ -26,6 +26,7 @@ This project grew out of work on [YoVoiceAgent](https://github.com/devshohag/YoV
 - Run tests for transitions, repeated input, handler selection, failures, and cancellation.
 - Persist a session and resume pending actions using `DurableWorkflowRunner` and `FileWorkflowSessionStore`.
 - Give durable action handlers stable IDs to deduplicate external effects across retries.
+- Accept a typed AI proposal through `YoAIWorkflow.AI`, check its confidence and business rules, then save a decision without dispatching actions automatically.
 
 The workflow engine computes a decision only. Applications can use the existing in-process executor or opt into the durable runner. The sample handlers write to the console; they do not send messages or update orders. The durable runner saves state and action checkpoints between processes.
 
@@ -43,6 +44,8 @@ dotnet run --project samples/PersistentOrderConfirmation/PersistentOrderConfirma
 dotnet run --project samples/PersistentOrderConfirmation/PersistentOrderConfirmation.csproj -- confirm ORDER-1001 reply-1
 dotnet run --project samples/PersistentOrderConfirmation/PersistentOrderConfirmation.csproj -- show ORDER-1001
 dotnet run --project samples/PersistentOrderConfirmation/PersistentOrderConfirmation.csproj -- dispatch ORDER-1001
+dotnet run --project samples/AIOrderProposal/AIOrderProposal.csproj -- confirm
+dotnet run --project samples/AIOrderProposal/AIOrderProposal.csproj -- maybe
 ```
 
 In the order sample, enter `1` to confirm, `2` to cancel, or anything else to request human review. In the booking sample, enter a service code, a date in `yyyy-MM-dd` format, and then `1` to confirm or `2` to cancel. Both samples print their state and the action handled by a console-only handler.
@@ -95,15 +98,25 @@ Durable delivery is **at least once**. If a process stops after an external effe
 
 The persistent order sample uses `workflow-data/` beneath the current working directory; the folder is ignored by Git. Run `start`, then `confirm` with an input ID, and `show` in a fresh process to see that the pending action survived. Run `dispatch` and `show` again to see the saved checkpoint. The console handler shows the stable action ID but performs no real business effect.
 
+## AI proposals and the trust boundary (Phase 5)
+
+`YoAIWorkflow.AI` has no provider SDK dependency. An application implements `IAIInputSource<TContext, TInput>` to parse a model response into `AIInputProposal<TInput>` with confidence from 0 to 1. The `AIWorkflowInputAdapter` rejects missing inputs, confidence outside that range, and proposals below a configurable minimum (default `0.8`). The application's `IAIInputValidator<TState, TInput>` then validates the typed input against the **current persisted state** before the runner computes and saves a decision. On a revision conflict, the runner loads state and validates again. A rejected proposal is not recorded as processed input, creates no actions, and does not call a handler. The host handles a rejection by asking for clarification or handing off according to its product rules.
+
+The model never supplies a `WorkflowAction` or final business state through this adapter. Even a valid proposal only saves action intents; the host explicitly calls `DispatchAsync` afterward. The validator must check valid enum values, permissions, required evidence, applicable state, and any other business-specific rules. Confidence is supplied by the proposal source; it is not proof that the model is correct. Assign a stable `inputId` for each upstream event and reuse it on retries.
+
+For example, an order host can implement `IAIInputSource<string, CustomerReply>` for its chosen model and `IAIInputValidator<OrderState, CustomerReply>` for its order rules. `samples/AIOrderProposal` uses a deterministic **simulated source**, so you can test `confirm`, `cancel`, `review`, `maybe` (low confidence), or an unknown value without an API key. It does not call a real LLM or interpret speech. The validator rejects proposals against a closed order. Existing direct `WorkflowEngine.Process` and `DurableWorkflowRunner.ProcessAsync` methods remain explicit host APIs; applications must route untrusted model output through validation instead of calling them directly.
+
 ## Repository structure
 
 | Path | Purpose |
 | --- | --- |
 | `src/YoAIWorkflow.Abstractions` | Workflow contract, action intent, transition result, and action handler interface |
-| `src/YoAIWorkflow.Core` | Decision engine, action executor, and failure report |
+| `src/YoAIWorkflow.Core` | Decision engine, durable runner, file store, action executor, and validation hook |
+| `src/YoAIWorkflow.AI` | Provider-independent typed input proposal adapter and validator interface |
 | `samples/OrderConfirmation` | Example business rules, console input, and console handlers |
 | `samples/AppointmentBooking` | Multi-turn booking example with independent rules and console handlers |
 | `samples/PersistentOrderConfirmation` | File-backed restart demonstration with the order workflow |
+| `samples/AIOrderProposal` | Simulated AI proposal with explicit business validation |
 | `tests/YoAIWorkflow.Tests` | Tests for both workflows, handler execution, and failures |
 | `.github/workflows/ci.yml` | Build and test on pushes to `main` |
 
@@ -116,8 +129,8 @@ Dependencies flow from `Core` to `Abstractions`. Product workflows reference the
 | 1 | Independent solution, typed contracts, order example, and tests | Complete; CI passed |
 | 2 | Explicit action handlers and a failure contract | Complete; CI passed |
 | 3 | A second workflow to verify reuse across different business rules | Complete; local build and 19 tests passed |
-| 4 | Persist, resume, and supply stable action IDs for handler deduplication | Code prepared; build verification pending |
-| 5 | Optional AI input adapter with validation before actions | Planned |
+| 4 | Persist, resume, and supply stable action IDs for handler deduplication | Complete; local build and 24 tests passed |
+| 5 | Optional AI input adapter with validation before actions | Code prepared; build verification pending |
 | 6 | Optional voice and other channel integrations | Planned |
 | 7 | Package release and integration documentation | Planned |
 
