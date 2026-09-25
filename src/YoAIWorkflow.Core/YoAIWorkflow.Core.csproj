@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../YoAIWorkflow.Abstractions/YoAIWorkflow.Abstractions.csproj" />
+  </ItemGroup>
+</Project>
+
