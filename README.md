@@ -4,7 +4,7 @@
 
 YoAIWorkflow helps applications turn an input and a current state into a new state and a set of requested business actions. Workflow rules live in typed C# code; the application decides how to collect input, save state, and execute actions.
 
-> **Project status:** Early development. Phase 3 demonstrates two different business workflows on the same SDK contracts. AI integration and persistence are still planned. Public APIs may change before the first package release.
+> **Project status:** Early development. Phase 4 adds a file-backed, single-host persistence example and resumable action dispatch. AI integration and a production database adapter are still planned. Public APIs may change before the first package release.
 
 ## Why it exists
 
@@ -24,8 +24,10 @@ This project grew out of work on [YoVoiceAgent](https://github.com/devshohag/YoV
 - Run the order confirmation sample: confirm, cancel, or request human review.
 - Run an appointment booking sample: choose a service, choose a date, then confirm or request human review.
 - Run tests for transitions, repeated input, handler selection, failures, and cancellation.
+- Persist a session and resume pending actions using `DurableWorkflowRunner` and `FileWorkflowSessionStore`.
+- Give durable action handlers stable IDs to deduplicate external effects across retries.
 
-The workflow engine computes a decision only. A separate executor invokes application-provided handlers. The sample handlers write to the console; they do not send messages or update orders. Workflow state and action progress are not persisted between processes.
+The workflow engine computes a decision only. Applications can use the existing in-process executor or opt into the durable runner. The sample handlers write to the console; they do not send messages or update orders. The durable runner saves state and action checkpoints between processes.
 
 ## Getting started
 
@@ -37,6 +39,10 @@ dotnet build YoAIWorkflow.slnx --no-restore
 dotnet test YoAIWorkflow.slnx --no-build
 dotnet run --project samples/OrderConfirmation/OrderConfirmation.csproj
 dotnet run --project samples/AppointmentBooking/AppointmentBooking.csproj
+dotnet run --project samples/PersistentOrderConfirmation/PersistentOrderConfirmation.csproj -- start ORDER-1001
+dotnet run --project samples/PersistentOrderConfirmation/PersistentOrderConfirmation.csproj -- confirm ORDER-1001 reply-1
+dotnet run --project samples/PersistentOrderConfirmation/PersistentOrderConfirmation.csproj -- show ORDER-1001
+dotnet run --project samples/PersistentOrderConfirmation/PersistentOrderConfirmation.csproj -- dispatch ORDER-1001
 ```
 
 In the order sample, enter `1` to confirm, `2` to cancel, or anything else to request human review. In the booking sample, enter a service code, a date in `yyyy-MM-dd` format, and then `1` to confirm or `2` to cancel. Both samples print their state and the action handled by a console-only handler.
@@ -71,13 +77,23 @@ The order sample accepts one customer reply and decides whether an order is conf
 
 Both examples use `WorkflowEngine<TState, TInput>`, `WorkflowTransition<TState>`, and `WorkflowActionExecutor<TState>`. Each example owns its state, inputs, transition rules, and action handlers. The booking workflow receives the earliest acceptable date from its host, so its tests do not depend on the machine clock. A real host must choose that date using its business timezone and check actual slot availability before creating an appointment.
 
-`BookingRequested` describes the workflow decision. The example does not create a database booking, reserve a slot, send a confirmation, or survive a restart. Those operations require host integrations and the later persistence phase.
+`BookingRequested` describes the workflow decision. The booking console example does not create a database booking, reserve a slot, send a confirmation, or save its state. A host can use the Phase 4 persistence interfaces for a workflow of its choice.
 
 ## Action execution and failures
 
 Call `Process` to get a transition, then call `ExecuteAsync` only when the host is ready to perform its business actions. The executor checks that every requested action has exactly one named handler before it invokes any handler. Handlers run in order. On the first handler exception, execution stops and the report contains `CompletedCount`, the failed action's index, and the exception. A missing handler produces a failure report without starting any action. Cancellation is propagated to the caller.
 
-The report is an observation of this in-process attempt. It does not roll back actions that already completed, persist progress, or make retries safe. A production host must define its own storage and idempotency strategy; those concerns are planned for Phase 4.
+The original `WorkflowActionExecutor` remains in-process and does not persist progress. For restart and retry behavior, use the separate runner below.
+
+## Durable workflow sessions (Phase 4)
+
+`DurableWorkflowRunner<TState, TInput>` loads a stored session, applies an input once per caller-supplied `inputId`, and saves the state and pending actions **before** dispatch. Call `DispatchAsync(workflowId)` to execute pending actions; each successful action is checkpointed. A restart can load the session and call `DispatchAsync` again. A new input waits until all actions from the previous input are complete. Each write uses an expected revision so concurrent writers cannot silently overwrite a decision. Input IDs must be stable across upstream retries and unique to each distinct input for a workflow.
+
+The `IWorkflowSessionStore<TState>` contract accepts a custom persistence adapter. `FileWorkflowSessionStore<TState>` writes JSON snapshots to a local directory, keyed by a hash of the workflow ID. It uses a lock file and a temporary file rename to protect one filesystem shared by processes; it is a development and single-host example, not a distributed database or a guarantee of survival after power loss. State types must serialize and deserialize correctly with `System.Text.Json`; supply `JsonSerializerOptions` when needed (for example, custom polymorphic types). The store holds all processed input IDs for a session, so long-running workloads need a retention policy and a production storage design.
+
+Durable delivery is **at least once**. If a process stops after an external effect succeeds but before its completion checkpoint is saved, dispatch will invoke the handler again with the **same action ID**. Implement `IIdempotentWorkflowActionHandler<TState>` so that recording the ID and applying its business effect happen atomically in the external system. For example, put a unique action ID and an order update in the same database transaction. A handler that only prints to the console, sends an SMS without provider-side deduplication, or writes an ID separately from its effect does not guarantee exactly-once results. Two dispatchers may also call a pending handler concurrently; the handler must enforce that same idempotency rule. There is no built-in timeout, lease, poison queue, or automatic retry scheduler.
+
+The persistent order sample uses `workflow-data/` beneath the current working directory; the folder is ignored by Git. Run `start`, then `confirm` with an input ID, and `show` in a fresh process to see that the pending action survived. Run `dispatch` and `show` again to see the saved checkpoint. The console handler shows the stable action ID but performs no real business effect.
 
 ## Repository structure
 
@@ -87,6 +103,7 @@ The report is an observation of this in-process attempt. It does not roll back a
 | `src/YoAIWorkflow.Core` | Decision engine, action executor, and failure report |
 | `samples/OrderConfirmation` | Example business rules, console input, and console handlers |
 | `samples/AppointmentBooking` | Multi-turn booking example with independent rules and console handlers |
+| `samples/PersistentOrderConfirmation` | File-backed restart demonstration with the order workflow |
 | `tests/YoAIWorkflow.Tests` | Tests for both workflows, handler execution, and failures |
 | `.github/workflows/ci.yml` | Build and test on pushes to `main` |
 
@@ -98,8 +115,8 @@ Dependencies flow from `Core` to `Abstractions`. Product workflows reference the
 | --- | --- | --- |
 | 1 | Independent solution, typed contracts, order example, and tests | Complete; CI passed |
 | 2 | Explicit action handlers and a failure contract | Complete; CI passed |
-| 3 | A second workflow to verify reuse across different business rules | Code prepared; build verification pending |
-| 4 | Persist, resume, and deduplicate work safely | Planned |
+| 3 | A second workflow to verify reuse across different business rules | Complete; local build and 19 tests passed |
+| 4 | Persist, resume, and supply stable action IDs for handler deduplication | Code prepared; build verification pending |
 | 5 | Optional AI input adapter with validation before actions | Planned |
 | 6 | Optional voice and other channel integrations | Planned |
 | 7 | Package release and integration documentation | Planned |
