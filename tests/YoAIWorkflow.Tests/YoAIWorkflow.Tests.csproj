@@ -11,6 +11,6 @@
   <ItemGroup>
     <ProjectReference Include="../../src/YoAIWorkflow.Core/YoAIWorkflow.Core.csproj" />
     <ProjectReference Include="../../samples/OrderConfirmation/OrderConfirmation.csproj" />
+    <ProjectReference Include="../../samples/AppointmentBooking/AppointmentBooking.csproj" />
   </ItemGroup>
 </Project>
-

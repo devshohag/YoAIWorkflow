@@ -2,6 +2,6 @@
   <Project Path="src/YoAIWorkflow.Abstractions/YoAIWorkflow.Abstractions.csproj" />
   <Project Path="src/YoAIWorkflow.Core/YoAIWorkflow.Core.csproj" />
   <Project Path="samples/OrderConfirmation/OrderConfirmation.csproj" />
+  <Project Path="samples/AppointmentBooking/AppointmentBooking.csproj" />
   <Project Path="tests/YoAIWorkflow.Tests/YoAIWorkflow.Tests.csproj" />
 </Solution>
-
