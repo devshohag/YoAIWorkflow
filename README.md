@@ -4,7 +4,7 @@
 
 YoAIWorkflow helps applications turn an input and a current state into a new state and a set of requested business actions. Workflow rules live in typed C# code; the application decides how to collect input, save state, and execute actions.
 
-> **Project status:** Early development. Phase 5 adds a provider-independent adapter for typed AI input proposals and business validation. A real model provider, production database adapter, and package release are still planned. Public APIs may change before the first package release.
+> **Project status:** Early development. Phase 6 adds provider-independent routing from application events to typed workflow inputs. A real model provider, production database adapter, and package release are still planned. Public APIs may change before the first package release.
 
 ## Why it exists
 
@@ -27,6 +27,7 @@ This project grew out of work on [YoVoiceAgent](https://github.com/devshohag/YoV
 - Persist a session and resume pending actions using `DurableWorkflowRunner` and `FileWorkflowSessionStore`.
 - Give durable action handlers stable IDs to deduplicate external effects across retries.
 - Accept a typed AI proposal through `YoAIWorkflow.AI`, check its confidence and business rules, then save a decision without dispatching actions automatically.
+- Map any application event to a typed workflow input through `YoAIWorkflow.Channels`, with an application-supplied state guard and explicit action dispatch.
 
 The workflow engine computes a decision only. Applications can use the existing in-process executor or opt into the durable runner. The sample handlers write to the console; they do not send messages or update orders. The durable runner saves state and action checkpoints between processes.
 
@@ -46,6 +47,7 @@ dotnet run --project samples/PersistentOrderConfirmation/PersistentOrderConfirma
 dotnet run --project samples/PersistentOrderConfirmation/PersistentOrderConfirmation.csproj -- dispatch ORDER-1001
 dotnet run --project samples/AIOrderProposal/AIOrderProposal.csproj -- confirm
 dotnet run --project samples/AIOrderProposal/AIOrderProposal.csproj -- maybe
+dotnet run --project samples/ChannelApiHost/ChannelApiHost.csproj -- --urls http://localhost:5086
 ```
 
 In the order sample, enter `1` to confirm, `2` to cancel, or anything else to request human review. In the booking sample, enter a service code, a date in `yyyy-MM-dd` format, and then `1` to confirm or `2` to cancel. Both samples print their state and the action handled by a console-only handler.
@@ -106,6 +108,23 @@ The model never supplies a `WorkflowAction` or final business state through this
 
 For example, an order host can implement `IAIInputSource<string, CustomerReply>` for its chosen model and `IAIInputValidator<OrderState, CustomerReply>` for its order rules. `samples/AIOrderProposal` uses a deterministic **simulated source**, so you can test `confirm`, `cancel`, `review`, `maybe` (low confidence), or an unknown value without an API key. It does not call a real LLM or interpret speech. The validator rejects proposals against a closed order. Existing direct `WorkflowEngine.Process` and `DurableWorkflowRunner.ProcessAsync` methods remain explicit host APIs; applications must route untrusted model output through validation instead of calling them directly.
 
+## Application event routing (Phase 6)
+
+`YoAIWorkflow.Channels` accepts **any** external event type through `IWorkflowEventMapper<TExternalEvent, TInput>`. The consuming application maps its own event into `WorkflowInboundEvent<TInput>(workflowId, inputId, input)`. `WorkflowInputRouter<TExternalEvent, TState, TInput>` rejects unmapped or malformed events, applies a caller-supplied guard against the latest saved state, then persists the transition using `DurableWorkflowRunner`. No handler is invoked during routing; the application chooses when to dispatch. Repeated delivery of the same `inputId` for the same workflow does not create another decision. Give distinct real events distinct IDs, even if they have the same text.
+
+The SDK's router knows nothing about HTTP, voice, DTMF, Asterisk, YoVoiceAgent, Gemini, a specific business process, or how an event is authenticated. Your application owns those concerns. You can implement different mappers for an ASP.NET API, a voice runtime, a queue consumer, or another source; they can all target the same `IWorkflow<TState, TInput>`. If an event needs AI interpretation, your host can pass its context to the Phase 5 AI adapter instead of using a direct mapper. The core workflow remains independent of both routes.
+
+`samples/ChannelApiHost` is **example application code**, not an SDK dependency. It hosts an ASP.NET Core API and maps two example request kinds (`text` and `key`) to the order workflow. Its handler only writes to the console. In one terminal start the sample using the `dotnet run` command above; in a second terminal (PowerShell), try:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:5086/workflows/ORDER-2001/start
+Invoke-RestMethod -Method Post -Uri http://localhost:5086/workflows/ORDER-2001/events -ContentType 'application/json' -Body '{"inputId":"reply-1","kind":"text","value":"confirm"}'
+Invoke-RestMethod -Method Get -Uri http://localhost:5086/workflows/ORDER-2001
+Invoke-RestMethod -Method Post -Uri http://localhost:5086/workflows/ORDER-2001/dispatch
+```
+
+To try the second kind, start another workflow ID and send `{"inputId":"reply-2","kind":"key","value":"1"}`. Host-level authentication, provider credentials, business persistence, and real effect handlers are the consuming application's responsibility. Published NuGet installation is planned for Phase 7; until then samples use project references.
+
 ## Repository structure
 
 | Path | Purpose |
@@ -113,10 +132,12 @@ For example, an order host can implement `IAIInputSource<string, CustomerReply>`
 | `src/YoAIWorkflow.Abstractions` | Workflow contract, action intent, transition result, and action handler interface |
 | `src/YoAIWorkflow.Core` | Decision engine, durable runner, file store, action executor, and validation hook |
 | `src/YoAIWorkflow.AI` | Provider-independent typed input proposal adapter and validator interface |
+| `src/YoAIWorkflow.Channels` | Generic mapper and router for host-owned external events |
 | `samples/OrderConfirmation` | Example business rules, console input, and console handlers |
 | `samples/AppointmentBooking` | Multi-turn booking example with independent rules and console handlers |
 | `samples/PersistentOrderConfirmation` | File-backed restart demonstration with the order workflow |
 | `samples/AIOrderProposal` | Simulated AI proposal with explicit business validation |
+| `samples/ChannelApiHost` | ASP.NET Core host example with two application-defined event mappings |
 | `tests/YoAIWorkflow.Tests` | Tests for both workflows, handler execution, and failures |
 | `.github/workflows/ci.yml` | Build and test on pushes to `main` |
 
@@ -130,8 +151,8 @@ Dependencies flow from `Core` to `Abstractions`. Product workflows reference the
 | 2 | Explicit action handlers and a failure contract | Complete; CI passed |
 | 3 | A second workflow to verify reuse across different business rules | Complete; local build and 19 tests passed |
 | 4 | Persist, resume, and supply stable action IDs for handler deduplication | Complete; local build and 24 tests passed |
-| 5 | Optional AI input adapter with validation before actions | Code prepared; build verification pending |
-| 6 | Optional voice and other channel integrations | Planned |
+| 5 | Optional AI input adapter with validation before actions | Complete; local build and 31 tests passed |
+| 6 | Generic application event ingress and a separate API host example | Code prepared; build verification pending |
 | 7 | Package release and integration documentation | Planned |
 
 RAG and a broader LangChain-style .NET library are possible later projects. They are outside this SDK's current scope.

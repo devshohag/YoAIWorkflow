@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <ItemGroup>
+    <ProjectReference Include="../../src/YoAIWorkflow.Channels/YoAIWorkflow.Channels.csproj" />
+    <ProjectReference Include="../OrderConfirmation/OrderConfirmation.csproj" />
+  </ItemGroup>
+</Project>
